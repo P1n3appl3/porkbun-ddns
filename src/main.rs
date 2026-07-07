@@ -1,27 +1,32 @@
-use std::{env, net::IpAddr, time::Duration};
-
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use clap::Parser;
 use futures::{StreamExt, stream::FuturesUnordered};
 use porkbun_api::{
     ApiKey, Client, CreateOrEditDnsRecord, DnsRecordType, transport::DefaultTransport,
 };
 
-/// TODO
+use std::{env, net::IpAddr, time::Duration};
+
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(version, about, long_about = None, group(
+    clap::ArgGroup::new("ips").required(true).multiple(true)
+))]
 struct Args {
     /// domain(s) to update records for
     #[arg(required = true)]
     domain: Vec<String>,
 
     /// set A records
-    #[arg(long, short = '4')]
+    #[arg(long, short = '4', group = "ips")]
     ipv4: bool,
 
     /// set AAAA records
-    #[arg(long, short = '6')]
+    #[arg(long, short = '6', group = "ips")]
     ipv6: bool,
+
+    /// set A or AAAA records using the given ip address rather than your current ip
+    #[arg(long, group = "ips", conflicts_with_all = ["ipv4", "ipv6"])]
+    ip: Option<String>,
 
     /// TTL in seconds
     #[arg(long, default_value_t = 21600)]
@@ -34,22 +39,24 @@ const KEY: &str = "PORKBUN_API_KEY";
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    if !(args.ipv4 || args.ipv6) {
-        return Err(anyhow!("no record types selected, pass --ipv4 or --ipv6"));
-    }
     let api_key =
         ApiKey::new(env::var(SECRET).context(SECRET)?, env::var(KEY).context(KEY)?);
     let client = Client::new(api_key);
 
     let mut ips = Vec::new();
-    if args.ipv4 {
-        ips.push(IpAddr::V4(
-            reqwest::get("https://api.ipify.org").await?.text().await?.parse()?,
-        ));
+    if let Some(ip) = args.ip {
+        ips.push(ip.parse()?)
+    } else {
+        if args.ipv4 {
+            ips.push(IpAddr::V4(
+                reqwest::get("https://api.ipify.org").await?.text().await?.parse()?,
+            ));
+        }
+        if args.ipv6 {
+            ips.push(client.ping().await?);
+        }
     }
-    if args.ipv6 {
-        ips.push(client.ping().await?);
-    }
+
     let mut updates = FuturesUnordered::new();
     for ip in ips {
         for domain in &args.domain {
@@ -83,8 +90,10 @@ async fn update<'a>(
         })
         .context("no matching records")?;
 
-    dbg!(record, &update);
-    dbg!(client.edit(root, &record.id, update).await)?;
-    dbg!("done");
+    client
+        .edit(root, &record.id, update)
+        .await
+        .inspect_err(|e| eprintln!("\x1b[;2m{e:?}\x1b[0m"))
+        .ok();
     Ok((domain, ip))
 }
