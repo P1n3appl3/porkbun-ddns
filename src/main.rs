@@ -1,6 +1,6 @@
 use std::{env, net::IpAddr};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use futures::{StreamExt, stream::FuturesUnordered};
 use porkbun_api::{
@@ -15,7 +15,11 @@ struct Args {
     #[arg(required = true)]
     domain: Vec<String>,
 
-    /// also set AAAA records
+    /// set A records
+    #[arg(long)]
+    ipv4: bool,
+
+    /// set AAAA records
     #[arg(long)]
     ipv6: bool,
 
@@ -30,13 +34,19 @@ const KEY: &str = "PORKBUN_API_KEY";
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    if !(args.ipv4 || args.ipv6) {
+        return Err(anyhow!("no record types selected, pass --ipv4 or --ipv6"));
+    }
     let api_key =
         ApiKey::new(env::var(SECRET).context(SECRET)?, env::var(KEY).context(KEY)?);
     let client = Client::new(api_key);
 
-    let ipv4 =
-        IpAddr::V4(reqwest::get("https://api.ipify.org").await?.text().await?.parse()?);
-    let mut ips = vec![ipv4];
+    let mut ips = Vec::new();
+    if args.ipv4 {
+        ips.push(IpAddr::V4(
+            reqwest::get("https://api.ipify.org").await?.text().await?.parse()?,
+        ));
+    }
     if args.ipv6 {
         ips.push(client.ping().await?);
     }
