@@ -1,4 +1,4 @@
-use std::{env, net::IpAddr};
+use std::{env, net::IpAddr, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
@@ -16,16 +16,16 @@ struct Args {
     domain: Vec<String>,
 
     /// set A records
-    #[arg(long)]
+    #[arg(long, short = '4')]
     ipv4: bool,
 
     /// set AAAA records
-    #[arg(long)]
+    #[arg(long, short = '6')]
     ipv6: bool,
 
     /// TTL in seconds
     #[arg(long, default_value_t = 21600)]
-    ttl: u32,
+    ttl: u64,
 }
 
 const SECRET: &str = "PORKBUN_API_SECRET";
@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
     let mut updates = FuturesUnordered::new();
     for ip in ips {
         for domain in &args.domain {
-            updates.push(update(ip, domain, &client))
+            updates.push(update(&client, ip, domain, Duration::from_secs(args.ttl)))
         }
     }
     while let Some(edit) = updates.next().await {
@@ -64,12 +64,16 @@ async fn main() -> Result<()> {
 }
 
 async fn update<'a>(
+    client: &Client<DefaultTransport>,
     ip: IpAddr,
     domain: &'a str,
-    client: &Client<DefaultTransport>,
+    ttl: Duration,
 ) -> Result<(&'a str, IpAddr)> {
-    let update = CreateOrEditDnsRecord::A_or_AAAA(None, ip);
-    let records = &client.get_all(domain).await?;
+    let without_tld = &domain[..domain.rfind('.').context("no dot in domain")?];
+    let root = &domain[without_tld.rfind('.').map(|n| n + 1).unwrap_or_default()..];
+    let subdomain = without_tld.rfind('.').map(|n| &domain[..n]);
+    let update = CreateOrEditDnsRecord::A_or_AAAA(subdomain, ip).with_ttl(Some(ttl));
+    let records = &client.get_all(root).await?;
     let record = records
         .iter()
         .find(|d| {
@@ -79,6 +83,8 @@ async fn update<'a>(
         })
         .context("no matching records")?;
 
-    client.edit(domain, &record.id, update).await?;
+    dbg!(record, &update);
+    dbg!(client.edit(root, &record.id, update).await)?;
+    dbg!("done");
     Ok((domain, ip))
 }
