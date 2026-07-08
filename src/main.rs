@@ -1,11 +1,16 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use futures::{StreamExt, stream::FuturesUnordered};
+use local_ip_address::local_ipv6;
 use porkbun_api::{
     ApiKey, Client, CreateOrEditDnsRecord, DnsRecordType, transport::DefaultTransport,
 };
 
-use std::{env, net::IpAddr, time::Duration};
+use std::{
+    env,
+    net::{IpAddr, Ipv6Addr},
+    time::Duration,
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None, group(
@@ -53,7 +58,13 @@ async fn main() -> Result<()> {
             ));
         }
         if args.ipv6 {
-            ips.push(client.ping().await?);
+            // TODO: iterate over local ipv6s and pick the right one
+            let IpAddr::V6(local) = local_ipv6()? else { unreachable!() };
+            let mac = mac_address::get_mac_address()?.context("no interfaces")?;
+            let [a, b, c, d, e, f] = mac.bytes();
+            let ip = local.to_bits() & 0xFFFF_FFFF_FFFF_FFFF_0000_0000_0000_0000
+                | u64::from_be_bytes([a ^ 2, b, c, 0xff, 0xfe, d, e, f]) as u128;
+            ips.push(dbg!(IpAddr::V6(Ipv6Addr::from_bits(ip))));
         }
     }
 
