@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use futures::{StreamExt, stream::FuturesUnordered};
 use local_ip_address::local_ipv6;
@@ -41,6 +41,12 @@ struct Args {
 const SECRET: &str = "PORKBUN_API_SECRET";
 const KEY: &str = "PORKBUN_API_KEY";
 
+struct Update<'a> {
+    old: String,
+    new: IpAddr,
+    domain: &'a str,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -75,8 +81,8 @@ async fn main() -> Result<()> {
         }
     }
     while let Some(edit) = updates.next().await {
-        let (domain, ip) = edit?;
-        println!("Updated {domain} to point at {ip}");
+        let Update { old, new, domain } = edit?;
+        println!("Updated {domain} to point at {new} (was {old})");
     }
     Ok(())
 }
@@ -86,7 +92,7 @@ async fn update<'a>(
     ip: IpAddr,
     domain: &'a str,
     ttl: Duration,
-) -> Result<(&'a str, IpAddr)> {
+) -> Result<Update<'a>> {
     let without_tld = &domain[..domain.rfind('.').context("no dot in domain")?];
     let root = &domain[without_tld.rfind('.').map(|n| n + 1).unwrap_or_default()..];
     let subdomain = without_tld.rfind('.').map(|n| &domain[..n]);
@@ -101,10 +107,13 @@ async fn update<'a>(
         })
         .context("no matching records")?;
 
+    if record.content.parse::<IpAddr>()? == ip {
+        return Err(anyhow!("{domain} already points at that ip"));
+    }
     client
         .edit(root, &record.id, update)
         .await
         .inspect_err(|e| eprintln!("\x1b[;2m{e:?}\x1b[0m"))
         .ok();
-    Ok((domain, ip))
+    Ok(Update { domain, old: record.content.clone(), new: ip })
 }
