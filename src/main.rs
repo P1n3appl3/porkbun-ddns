@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use clap::Parser;
 use futures::{StreamExt, stream::FuturesUnordered};
 use local_ip_address::local_ipv6;
@@ -29,7 +29,8 @@ struct Args {
     #[arg(long, short = '6', group = "ips")]
     ipv6: bool,
 
-    /// set A or AAAA records using the given ip address rather than your current ip
+    /// set A or AAAA records using the given ip address rather than your
+    /// current ip
     #[arg(long, group = "ips", conflicts_with_all = ["ipv4", "ipv6"])]
     ip: Option<String>,
 
@@ -70,7 +71,7 @@ async fn main() -> Result<()> {
             let [a, b, c, d, e, f] = mac.bytes();
             let ip = local.to_bits() & 0xFFFF_FFFF_FFFF_FFFF_0000_0000_0000_0000
                 | u64::from_be_bytes([a ^ 2, b, c, 0xff, 0xfe, d, e, f]) as u128;
-            ips.push(dbg!(IpAddr::V6(Ipv6Addr::from_bits(ip))));
+            ips.push(IpAddr::V6(Ipv6Addr::from_bits(ip)));
         }
     }
 
@@ -81,8 +82,9 @@ async fn main() -> Result<()> {
         }
     }
     while let Some(edit) = updates.next().await {
-        let Update { old, new, domain } = edit?;
-        println!("Updated {domain} to point at {new} (was {old})");
+        if let Some(Update { old, new, domain }) = edit? {
+            println!("Updated {domain} to point at {new} (was {old})");
+        }
     }
     Ok(())
 }
@@ -92,7 +94,7 @@ async fn update<'a>(
     ip: IpAddr,
     domain: &'a str,
     ttl: Duration,
-) -> Result<Update<'a>> {
+) -> Result<Option<Update<'a>>> {
     let without_tld = &domain[..domain.rfind('.').context("no dot in domain")?];
     let root = &domain[without_tld.rfind('.').map(|n| n + 1).unwrap_or_default()..];
     let subdomain = without_tld.rfind('.').map(|n| &domain[..n]);
@@ -108,12 +110,14 @@ async fn update<'a>(
         .context("no matching records")?;
 
     if record.content.parse::<IpAddr>()? == ip {
-        return Err(anyhow!("{domain} already points at that ip"));
+        eprintln!("\x1b[;2m{domain} already points at {ip}\x1b[0m");
+        return Ok(None);
     }
-    client
+
+    Ok(client
         .edit(root, &record.id, update)
         .await
         .inspect_err(|e| eprintln!("\x1b[;2m{e:?}\x1b[0m"))
-        .ok();
-    Ok(Update { domain, old: record.content.clone(), new: ip })
+        .ok()
+        .map(|_| Update { domain, old: record.content.clone(), new: ip }))
 }
